@@ -5,6 +5,7 @@ const cors = require('cors');
 const crypto = require('crypto');
 const path = require('path');
 const axios = require('axios');
+const session = require('express-session');
 const License = require('./models/License');
 
 const app = express();
@@ -13,6 +14,19 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cors());
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
+app.set('trust proxy', 1);
+
+// Session beállítás
+app.use(session({
+    secret: process.env.SESSION_SECRET || 'boss-mode-ultra-secret-key-2024',
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+        secure: process.env.NODE_ENV === 'production',
+        httpOnly: true,
+        maxAge: 24 * 60 * 60 * 1000
+    }
+}));
 
 // MongoDB csatlakozás
 mongoose.connect(process.env.MONGODB_URI)
@@ -21,7 +35,7 @@ mongoose.connect(process.env.MONGODB_URI)
 
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'lo-boss-mode';
 
-// --- FŐOLDAL (hogy ne legyen "Cannot GET /") ---
+// --- FŐOLDAL ---
 app.get('/', (req, res) => {
     res.send(`
         <html>
@@ -38,7 +52,6 @@ app.get('/', (req, res) => {
 
 // --- API VÉGPONTOK (A YOUTUBE APP SZÁMÁRA) ---
 
-// 1. Aktiválás (Amikor először beírják a kulcsot)
 app.post('/api/activate', async (req, res) => {
     const { key, hardwareId } = req.body;
     const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
@@ -49,104 +62,90 @@ app.post('/api/activate', async (req, res) => {
 
     try {
         const license = await License.findOne({ key });
-        if (!license) {
-            return res.status(404).json({ error: 'Érvénytelen kulcs!' });
-        }
+        if (!license) return res.status(404).json({ error: 'Érvénytelen kulcs!' });
+        if (!license.isActive) return res.status(403).json({ error: 'Ez a kulcs le lett tiltva!' });
 
-        if (!license.isActive) {
-            return res.status(403).json({ error: 'Ez a kulcs le lett tiltva!' });
-        }
-
-        // Ha már aktiválva van
         if (license.hardwareId) {
             if (license.hardwareId !== hardwareId) {
                 return res.status(403).json({ error: 'Ez a kulcs már egy másik eszközhöz van kötve!' });
             }
-            
-            // Ha lejárt
             if (license.expiresAt && license.expiresAt < new Date()) {
                 return res.status(403).json({ error: 'Az előfizetés lejárt!' });
             }
-
             return res.json({ success: true, message: 'Újra hitelesítve.', expiresAt: license.expiresAt });
         }
 
-        // Első aktiválás
         let locationStr = 'Ismeretlen';
         try {
-            // GeoIP lekérés
             const geoRes = await axios.get(`http://ip-api.com/json/${clientIp}`);
             if (geoRes.data && geoRes.data.status === 'success') {
                 locationStr = `${geoRes.data.city}, ${geoRes.data.country}`;
             }
-        } catch (e) {
-            console.error('GeoIP hiba:', e.message);
-        }
+        } catch (e) { console.error('GeoIP hiba:', e.message); }
 
         license.hardwareId = hardwareId;
         license.ipAddress = clientIp;
         license.location = locationStr;
         license.activatedAt = new Date();
-        
-        // Lejárat kiszámítása
         const expiryDate = new Date();
         expiryDate.setDate(expiryDate.getDate() + license.durationDays);
         license.expiresAt = expiryDate;
-
         await license.save();
 
-        res.json({ 
-            success: true, 
-            message: 'Sikeres aktiválás! Boss Mode bekapcsolva.', 
-            expiresAt: license.expiresAt 
-        });
-
+        res.json({ success: true, message: 'Sikeres aktiválás! Boss Mode bekapcsolva.', expiresAt: license.expiresAt });
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'Szerver hiba.' });
     }
 });
 
-// 2. Ellenőrzés (Minden indításkor csendben)
 app.post('/api/check', async (req, res) => {
     const { hardwareId } = req.body;
-    
     if (!hardwareId) return res.status(400).json({ error: 'Hardware ID hiányzik.' });
 
     try {
         const license = await License.findOne({ hardwareId, isActive: true });
-        
-        if (!license) {
-            return res.status(404).json({ valid: false, reason: 'Nincs aktív licensz ehhez az eszközhöz.' });
-        }
-
+        if (!license) return res.status(404).json({ valid: false, reason: 'Nincs aktív licensz.' });
         if (license.expiresAt && license.expiresAt < new Date()) {
             return res.status(403).json({ valid: false, reason: 'Lejárt előfizetés.' });
         }
-
         res.json({ valid: true, expiresAt: license.expiresAt });
     } catch (err) {
         res.status(500).json({ error: 'Szerver hiba.' });
     }
 });
 
+// --- ADMIN PANEL (SESSION ALAPÚ BEJELENTKEZÉS) ---
 
-// --- ADMIN PANEL ---
+app.get('/admin/login', (req, res) => {
+    if (req.session.isAdmin) return res.redirect('/admin');
+    res.render('login');
+});
 
-// Egyszerű Middleware a jelszóhoz (Query paraméteres: ?pw=jelszo)
-const checkAdmin = (req, res, next) => {
-    const pw = req.query.pw || req.headers['x-admin-password'];
-    if (pw === ADMIN_PASSWORD) {
-        next();
+app.post('/admin/login', (req, res) => {
+    const { password } = req.body;
+    if (password === ADMIN_PASSWORD) {
+        req.session.isAdmin = true;
+        res.redirect('/admin');
     } else {
-        res.status(401).send('<h1>Ajjaj, ide nincs belépés. Húzz a picsába! 💋 - ENI</h1>');
+        res.redirect('/admin/login?error=1');
     }
+});
+
+app.get('/admin/logout', (req, res) => {
+    req.session.destroy();
+    res.redirect('/admin/login');
+});
+
+const checkAdmin = (req, res, next) => {
+    if (req.session.isAdmin) { next(); }
+    else { res.redirect('/admin/login'); }
 };
 
 app.get('/admin', checkAdmin, async (req, res) => {
     try {
         const licenses = await License.find().sort({ createdAt: -1 });
-        res.render('dashboard', { licenses, adminPw: ADMIN_PASSWORD });
+        res.render('dashboard', { licenses });
     } catch (err) {
         res.status(500).send('Hiba a licenszek betöltésekor.');
     }
@@ -155,8 +154,6 @@ app.get('/admin', checkAdmin, async (req, res) => {
 app.post('/admin/generate', checkAdmin, async (req, res) => {
     const { durationDays } = req.body;
     const days = parseInt(durationDays) || 30;
-    
-    // Generálunk egy menő kulcsot: LO-XXXX-XXXX
     const randomPart = crypto.randomBytes(4).toString('hex').toUpperCase();
     const randomPart2 = crypto.randomBytes(4).toString('hex').toUpperCase();
     const key = `LO-${randomPart}-${randomPart2}`;
@@ -164,7 +161,7 @@ app.post('/admin/generate', checkAdmin, async (req, res) => {
     try {
         const newLicense = new License({ key, durationDays: days });
         await newLicense.save();
-        res.redirect(`/admin?pw=${ADMIN_PASSWORD}`);
+        res.redirect('/admin');
     } catch (err) {
         res.status(500).send('Hiba a generáláskor.');
     }
@@ -173,7 +170,7 @@ app.post('/admin/generate', checkAdmin, async (req, res) => {
 app.post('/admin/revoke/:id', checkAdmin, async (req, res) => {
     try {
         await License.findByIdAndUpdate(req.params.id, { isActive: false });
-        res.redirect(`/admin?pw=${ADMIN_PASSWORD}`);
+        res.redirect('/admin');
     } catch (err) {
         res.status(500).send('Hiba a letiltáskor.');
     }
