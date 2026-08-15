@@ -47,7 +47,7 @@ public class LicenseManager {
     // ============================================================
     // A TE SZERVERED URL-JE (CSERÉLD KI A RENDER.COM CÍMRE!)
     // ============================================================
-    private static final String SERVER_URL = "https://YOUR-APP-NAME.onrender.com";
+    private static final String SERVER_URL = "https://patcher-server.onrender.com";
 
     private static boolean isPremiumActive = false;
     private static Context appContext = null;
