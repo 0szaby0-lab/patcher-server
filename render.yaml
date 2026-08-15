@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: revanced-boss-mode-api
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node index.js
+    envVars:
+      - key: MONGODB_URI
+        sync: false # Ezt kézzel add meg a Render.com dashboardon!
+      - key: ADMIN_PASSWORD
+        sync: false # Ezt is te állítod be a Render dashboardon.
+      - key: PORT
+        value: 3000
