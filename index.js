@@ -21,6 +21,21 @@ mongoose.connect(process.env.MONGODB_URI)
 
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'lo-boss-mode';
 
+// --- FŐOLDAL (hogy ne legyen "Cannot GET /") ---
+app.get('/', (req, res) => {
+    res.send(`
+        <html>
+        <head><title>Patcher Server</title></head>
+        <body style="background:#121212;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;">
+            <div style="text-align:center;">
+                <h1 style="color:#ff3366;">🔥 Patcher Server</h1>
+                <p style="color:#888;">API is running.</p>
+            </div>
+        </body>
+        </html>
+    `);
+});
+
 // --- API VÉGPONTOK (A YOUTUBE APP SZÁMÁRA) ---
 
 // 1. Aktiválás (Amikor először beírják a kulcsot)
